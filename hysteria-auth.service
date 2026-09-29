@@ -1,0 +1,39 @@
+# ============================================================
+# Hysteria 认证 + 流量上报服务
+# systemd 服务配置
+# ============================================================
+
+[Unit]
+Description=Hysteria Auth & Traffic Report Service
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+
+WorkingDirectory=/opt/hysteria-auth-service
+
+Environment=DATABASE_URL=mysql+aiomysql://hysteria_user:hysteria_pass@127.0.0.1:3306/hysteria
+Environment=REDIS_URL=redis://127.0.0.1:6379/0
+Environment=REDIS_CACHE_TTL=60
+
+ExecStart=/usr/bin/python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --log-level info
+
+Restart=on-failure
+RestartSec=5
+
+# 超时
+TimeoutStartSec=30
+TimeoutStopSec=30
+
+# 日志
+StandardOutput=journal
+StandardError=journal
+
+# 文件描述符
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

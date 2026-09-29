@@ -1,0 +1,11 @@
+# Hysteria 认证 + 流量上报服务
+# FastAPI + MySQL + Redis
+
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+sqlalchemy[asyncio]==2.0.36
+aiomysql==0.2.0
+redis[hiredis]==5.2.1
+bcrypt==4.2.0
+pydantic==2.10.3
+python-dotenv==1.0.1

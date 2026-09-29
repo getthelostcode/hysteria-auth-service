@@ -1,0 +1,16 @@
+*.pyc
+__pycache__/
+*.egg-info/
+*.egg
+*.log
+*.swp
+*.swo
+.env
+.env.*
+venv/
+.venv/
+*.tar.gz
+*.zip
+*.db
+*.sqlite
+.env
