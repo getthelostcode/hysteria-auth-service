@@ -4,7 +4,7 @@
 
 import os
 import re
-from contextlib import asynccontextend
+from contextlib import asynccontextmanager
 from typing import Optional
 
 import bcrypt
@@ -77,7 +77,7 @@ class TrafficReportResponse(BaseModel):
 # ============================================================
 # 数据库引擎 + 会话工厂
 # ============================================================
-engine = create_async_engine(DATABASE_URL, echo=False, pool_pre_ping=True)
+engine = create_async_engine(DATABASE_URL, echo=False)
 async_session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
@@ -90,7 +90,7 @@ redis_client: redis.Redis = None
 # ============================================================
 # 生命周期管理
 # ============================================================
-@asynccontextend
+@asynccontextmanager
 async def lifespan(app: FastAPI):
     global redis_client
     # 初始化 Redis
