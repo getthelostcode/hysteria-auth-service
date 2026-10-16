@@ -116,6 +116,8 @@ bash install.sh --verify            # 健康检查 + /auth 契约冒烟
 
 `install.sh` 会检查同一份清单，缺什么直接报 `缺少 PHP 扩展：xxx` 并退出，不会装到一半才炸。
 
+> **用 root 跑时特别注意**：Composer 在 root 下会问 `Continue as root/super user [yes]?` 并**一直等输入**（终端里跑就像卡死；用普通管道跑反而会带警告继续，所以不好复现）。脚本已经自己 `export COMPOSER_ALLOW_SUPERUSER=1` 和 `COMPOSER_NO_INTERACTION=1`，所有 composer 调用也都加了 `--no-interaction </dev/null`，因此不会等你敲 yes。若你手工敲 `composer` 命令遇到这个提问，回答 `yes` 或前缀 `COMPOSER_ALLOW_SUPERUSER=1` 即可。
+
 **实测版本组合**（本仓库就是在这一套上开发并跑测试的）：PHP 8.2.33 · Laravel 11.57.0 · Filament 3.3.57 · Livewire 3.8.10 · Sanctum 4.3.3 · Redis 7.0.15（phpredis） · SQLite 3 / MySQL 8.0.43。
 
 ### 1.2 一键安装（推荐）
@@ -388,6 +390,7 @@ sudo bash install.sh --verify                    # 当场验健康检查与 /aut
 | 注册页 404 | 注册被关（`REGISTRATION_ENABLED=false` 或面板里关了） | 面板设置里打开，或 `install.sh --registration=on` |
 | 注册报「用户名已被占用」 | 用户名即 Hysteria id，含软删除记录也会占用 | 换名字，或在面板里恢复/彻底删掉旧用户 |
 | 老用户登录不了 | 密码不是 bcrypt（例如旧版用了别的哈希），或没导入 | 用 `users:import-legacy`，或面板重置密码 |
+| `bash install.sh` 卡在「检查依赖」不动 | ① root 跑 `composer` 在等 `Continue as root/super user [yes]?`（新脚本已自动免疫，旧脚本会卡）；② `redis-cli ping` 打到不可达地址要等 TCP 超时（新脚本 3 秒就跳过并警告） | `git pull` 用新脚本；或 `DEBUG=1 bash install.sh …` 看最后一条命令，按提示处理 |
 | Redis 挂了会怎样 | `/health` 里 `redis:"error"`；鉴权会退化成每次查库并**拒绝写在线/计数** | `systemctl status redis-server`；Redis 是本服务的硬依赖（缓存+计数+限流） |
 
 ## 11. 测试

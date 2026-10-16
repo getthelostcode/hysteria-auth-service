@@ -14,6 +14,12 @@ set -euo pipefail
 # 排查卡点用：DEBUG=1 bash install.sh …（每执行一条命令都打印出来）
 [[ "${DEBUG:-0}" == "1" ]] && set -x
 
+# Composer 在 root 下会问「Continue as root/super user [yes]?」并**一直等输入**，
+# 在终端里跑（stdin 是 TTY）看起来就是卡死（普通管道里反而会带警告继续，所以本机测不出来）。
+# 这里统一关掉交互并允许 root：
+export COMPOSER_NO_INTERACTION=1
+if [[ "$(id -u)" -eq 0 ]]; then export COMPOSER_ALLOW_SUPERUSER=1; fi
+
 APP_NAME="hysteria-auth-service"
 SERVICE_USER="hysteria-auth"
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -195,7 +201,7 @@ fi
 
 composer_probe() {   # 返回 composer -V 的输出（stdout+stderr），失败为空
     [[ ${#COMPOSER_CMD[@]} -eq 0 ]] && return 1
-    run_t 20 "${COMPOSER_CMD[@]}" -V 2>&1 || true
+    run_t 20 "${COMPOSER_CMD[@]}" -V --no-interaction </dev/null 2>&1 || true
 }
 
 if [[ ${#COMPOSER_CMD[@]} -eq 0 ]] || [[ -z "$(composer_probe)" ]]; then
@@ -216,12 +222,12 @@ if [[ ${#COMPOSER_CMD[@]} -eq 0 ]] || [[ -z "$(composer_probe)" ]]; then
     if [[ "$(id -u)" -eq 0 ]]; then COMPOSER_DEST_DIR="/usr/local/bin"; fi
     mkdir -p "$COMPOSER_DEST_DIR" 2>/dev/null || true
     TMPC="$(mktemp -d)"
-    if run_t 60 "$PHP_BIN" -r "copy('https://getcomposer.org/installer', '$TMPC/composer-setup.php');" 2>/dev/null \
+    if run_t 60 "$PHP_BIN" -r "copy('https://getcomposer.org/installer', '$TMPC/composer-setup.php');" </dev/null 2>/dev/null \
        && [[ -s "$TMPC/composer-setup.php" ]]; then
         EXPECTED="$(run_t 30 curl -fsSL https://composer.github.io/installer.sig 2>/dev/null || true)"
         ACTUAL="$("$PHP_BIN" -r "echo hash_file('sha384', '$TMPC/composer-setup.php');" 2>/dev/null || true)"
         if [[ -n "$EXPECTED" && "$EXPECTED" == "$ACTUAL" ]]; then
-            if run_t 180 "$PHP_BIN" "$TMPC/composer-setup.php" --install-dir="$COMPOSER_DEST_DIR" --filename=composer.phar >/dev/null 2>&1 \
+            if run_t 180 "$PHP_BIN" "$TMPC/composer-setup.php" --install-dir="$COMPOSER_DEST_DIR" --filename=composer.phar </dev/null >/dev/null 2>&1 \
                && [[ -s "$COMPOSER_DEST_DIR/composer.phar" ]]; then
                 COMPOSER_CMD=("$PHP_BIN" "$COMPOSER_DEST_DIR/composer.phar")
                 log "  已安装 composer.phar 到 $COMPOSER_DEST_DIR（调用方式：$PHP_BIN $COMPOSER_DEST_DIR/composer.phar）"
@@ -240,7 +246,7 @@ if [[ ${#COMPOSER_CMD[@]} -eq 0 ]] || [[ -z "$(composer_probe)" ]]; then
     [[ ${#COMPOSER_CMD[@]} -ne 0 ]] && [[ -n "$(composer_probe)" ]] \
         || die "装不上 composer。请手动装（apt/dnf install composer），或下载 composer.phar 后用 --composer-bin=/路径/composer.phar 重跑"
 fi
-log "composer $("${COMPOSER_CMD[@]}" -V 2>/dev/null | awk '{print $3}') ✓（$([[ "${COMPOSER_CMD[0]}" == "$PHP_BIN" ]] && echo "phar: ${COMPOSER_CMD[1]}" || echo "${COMPOSER_CMD[0]}")）"
+log "composer $("${COMPOSER_CMD[@]}" -V --no-interaction </dev/null 2>/dev/null | awk '{print $3}') ✓（$([[ "${COMPOSER_CMD[0]}" == "$PHP_BIN" ]] && echo "phar: ${COMPOSER_CMD[1]}" || echo "${COMPOSER_CMD[0]}")）"
 
 REQUIRED_EXT=(pdo mbstring curl json openssl tokenizer xml ctype fileinfo redis)
 if [[ "$DB_DRIVER" == "sqlite" ]]; then REQUIRED_EXT+=(pdo_sqlite); else REQUIRED_EXT+=(pdo_mysql); fi
@@ -297,7 +303,7 @@ cd "$APP_DIR"
 
 # ---------------- 3. 依赖 ----------------
 log "composer install（--no-dev，正在下载依赖；视网络 30 秒~3 分钟，不要中断）"
-COMPOSER_ALLOW_SUPERUSER=1 run_t 900 "${COMPOSER_CMD[@]}" install --no-dev --prefer-dist --no-interaction --optimize-autoloader \
+COMPOSER_ALLOW_SUPERUSER=1 run_t 900 "${COMPOSER_CMD[@]}" install --no-dev --prefer-dist --no-interaction --optimize-autoloader </dev/null \
     || die "composer install 失败或超时（在 ${APP_DIR} 手动跑一次看报错）"
 
 # ---------------- 4. .env ----------------
