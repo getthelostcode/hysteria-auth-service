@@ -20,7 +20,9 @@ set -euo pipefail
 export COMPOSER_NO_INTERACTION=1
 if [[ "$(id -u)" -eq 0 ]]; then export COMPOSER_ALLOW_SUPERUSER=1; fi
 
-APP_NAME="hysteria-auth-service"
+APP_NAME="hysteria-auth-service"        # 日志与路径用
+UNIT_BASE="${UNIT_BASE:-hysteria-auth}"        # systemd 单元名前缀（deploy/systemd 里的文件名就是这个）
+SYSTEMD_UNIT_DIR="${SYSTEMD_UNIT_DIR:-/etc/systemd/system}"
 SERVICE_USER="hysteria-auth"
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -89,6 +91,7 @@ usage() {
   --traffic-token=<串>    开启 /traffic_report 兼容面（留空=关闭）
   --registration=on|off   是否开放自助注册（默认 off）
   --admin-email= --admin-password=   初始化管理员（密码留空则随机并打印）
+  --unit-base=<名>         systemd 单元名前缀（默认 hysteria-auth）
   --composer-bin=<路径>   指定 composer（可执行文件或 composer.phar）；没装 composer 时会自动下载官方 installer
   --no-composer-install   没装 composer 时不自动下载（只报错）
   --no-services           不安装 systemd 单元
@@ -117,6 +120,7 @@ while [[ $# -gt 0 ]]; do
         --registration=*) REGISTRATION="${1#*=}" ;;
         --admin-email=*) ADMIN_EMAIL="${1#*=}" ;;
         --admin-password=*) ADMIN_PASSWORD="${1#*=}" ;;
+        --unit-base=*) UNIT_BASE="${1#*=}" ;;
         --composer-bin=*) COMPOSER_BIN="${1#*=}" ;;
         --no-composer-install) COMPOSER_AUTO_INSTALL=0 ;;
         --no-services) INSTALL_SERVICES=0 ;;
@@ -135,7 +139,7 @@ verify() {
     log "健康检查 ${BASE_URL}/api/health"
     local health
     health="$(curl -s -m 10 "${BASE_URL}/api/health" || true)"
-    [[ -n "$health" ]] || die "健康检查无响应：${health:-空}（服务没起来？看 journalctl -u ${APP_NAME}）"
+    [[ -n "$health" ]] || die "健康检查无响应：${health:-空}（服务没起来？看 journalctl -u ${UNIT_BASE}）"
     echo "      $health"
     echo "$health" | grep -q '"redis":"ok"' || warn "Redis 未就绪（鉴权会退化成每次查库）"
 
@@ -154,11 +158,13 @@ verify() {
 
 uninstall() {
     log "停用并删除 systemd 单元"
-    for unit in "${APP_NAME}.service" "${APP_NAME}-scheduler.service"; do
+    for unit in "${UNIT_BASE}.service" "${UNIT_BASE}-scheduler.service"; do
         systemctl disable --now "$unit" 2>/dev/null || true
-        rm -f "/etc/systemd/system/$unit"
+        rm -f "${SYSTEMD_UNIT_DIR}/$unit"
     done
-    systemctl daemon-reload || true
+    # 早期版本用 APP_NAME 当单元名，会留下一个空的 hysteria-auth-service.service，顺手清掉
+    rm -f "${SYSTEMD_UNIT_DIR}/${APP_NAME}.service" "${SYSTEMD_UNIT_DIR}/${APP_NAME}-scheduler.service"
+    if [[ "$SYSTEMD_UNIT_DIR" == "/etc/systemd/system" ]]; then systemctl daemon-reload || true; fi
     log "已卸载（数据与代码保留在 ${APP_DIR}）"
 }
 
@@ -178,6 +184,8 @@ log "检查依赖（每个探测都有超时；下面每步都会先说“正在
 
 log "  → 找 php（$PHP_BIN）…"
 command -v "$PHP_BIN" >/dev/null || die "找不到 php（或用 PHP_BIN=/usr/bin/php8.2 指定）"
+# systemd 的 ExecStart 必须是绝对路径，这里把 php 解析成绝对路径（php 可能是 /usr/bin/php8.2 之类的软链）
+PHP_BIN="$(command -v "$PHP_BIN")"
 log "  → 读 PHP 版本…"
 PHP_VERSION="$(run_t 20 "$PHP_BIN" -r 'echo PHP_VERSION;' 2>/dev/null || true)"
 [[ -n "$PHP_VERSION" ]] || die "php 执行无输出（可能是包装脚本卡住）：试 timeout 5 $PHP_BIN -v"
@@ -356,32 +364,59 @@ chmod -R ug+rwX "$APP_DIR/storage" "$APP_DIR/bootstrap/cache" 2>/dev/null || tru
 chmod 600 "$APP_DIR/.env"
 
 # ---------------- 6. systemd ----------------
-if [[ "$INSTALL_SERVICES" -eq 1 ]] && command -v systemctl >/dev/null 2>&1; then
-    log "安装 systemd 单元（${MODE} 模式）"
+if [[ "$INSTALL_SERVICES" -eq 1 ]]; then
+    log "安装 systemd 单元（模式 ${MODE}，目录 ${SYSTEMD_UNIT_DIR}）"
+    mkdir -p "$SYSTEMD_UNIT_DIR"
+
+    # 模板文件名固定，UNIT_BASE 只决定装出来的单元名（一台机器跑多实例时用得上）
+    SVC_SRC="deploy/systemd/hysteria-auth.service"
+    SCH_SRC="deploy/systemd/hysteria-auth-scheduler.service"
+    SVC_DST="${SYSTEMD_UNIT_DIR}/${UNIT_BASE}.service"
+    SCH_DST="${SYSTEMD_UNIT_DIR}/${UNIT_BASE}-scheduler.service"
+
+    # 模板文件名必须对得上（这里踩过：拿 APP_NAME 去找 hysteria-auth.service，sed 报
+    # "can't read deploy/systemd/hysteria-auth-service.service"，还会留下一个空单元文件）
+    [[ -f "$SVC_SRC" ]] || die "缺少 ${SVC_SRC}（仓库文件不完整？当前目录 $(pwd) 里没有 deploy/systemd/）"
+    [[ -f "$SCH_SRC" ]] || die "缺少 ${SCH_SRC}（仓库文件不完整？）"
+
     if [[ "$MODE" == "fpm" ]]; then
         install -m0644 deploy/nginx/hysteria-auth.conf /etc/nginx/sites-available/hysteria-auth
         ln -sf /etc/nginx/sites-available/hysteria-auth /etc/nginx/sites-enabled/hysteria-auth
-        nginx -t && systemctl reload nginx || warn "nginx 配置校验/重载失败，请手动检查"
+        if command -v nginx >/dev/null 2>&1; then
+            nginx -t && systemctl reload nginx || warn "nginx 配置校验/重载失败，请手动检查"
+        else
+            warn "没装 nginx，站点配置只落到 /etc/nginx/sites-available/ 待你安装后启用"
+        fi
         systemctl enable --now php8.2-fpm 2>/dev/null || warn "请确认 php-fpm 已安装并启动"
     else
         sed -e "s#^WorkingDirectory=.*#WorkingDirectory=${APP_DIR}#" \
             -e "s#^ExecStart=.*#ExecStart=${PHP_BIN} artisan serve --host=${HOST} --port=${PORT}#" \
             -e "s#^User=.*#User=${SERVICE_USER}#" \
             -e "s#^Group=.*#Group=${SERVICE_USER}#" \
-            deploy/systemd/"${APP_NAME}.service" > /etc/systemd/system/"${APP_NAME}.service"
+            "$SVC_SRC" > "$SVC_DST"
+        log "  写入 $SVC_DST"
     fi
 
     sed -e "s#^WorkingDirectory=.*#WorkingDirectory=${APP_DIR}#" \
+        -e "s#^ExecStart=.*#ExecStart=${PHP_BIN} artisan schedule:work#" \
         -e "s#^User=.*#User=${SERVICE_USER}#" \
         -e "s#^Group=.*#Group=${SERVICE_USER}#" \
-        deploy/systemd/"${APP_NAME}-scheduler.service" > /etc/systemd/system/"${APP_NAME}-scheduler.service"
+        "$SCH_SRC" > "$SCH_DST"
+    log "  写入 $SCH_DST"
 
-    systemctl daemon-reload
-    systemctl enable --now "${APP_NAME}-scheduler.service" || warn "scheduler 启动失败，请手动检查"
-    if [[ "$MODE" == "serve" ]]; then
-        systemctl enable --now "${APP_NAME}.service" || warn "服务启动失败，请手动检查 journalctl -u ${APP_NAME}"
+    # 清掉老版本误产出的空单元（名字是 hysteria-auth-service.service）
+    rm -f "${SYSTEMD_UNIT_DIR}/${APP_NAME}.service" "${SYSTEMD_UNIT_DIR}/${APP_NAME}-scheduler.service"
+
+    if [[ "$SYSTEMD_UNIT_DIR" == "/etc/systemd/system" ]] && command -v systemctl >/dev/null 2>&1; then
+        systemctl daemon-reload
+        systemctl enable --now "${UNIT_BASE}-scheduler.service" || warn "scheduler 启动失败，请手动检查"
+        if [[ "$MODE" == "serve" ]]; then
+            systemctl enable --now "${UNIT_BASE}.service" || warn "服务启动失败，请手动检查 journalctl -u ${UNIT_BASE}"
+        fi
+        sleep 2
+    else
+        warn "未在真实 systemd 目录（${SYSTEMD_UNIT_DIR}），只生成单元文件，不执行 systemctl"
     fi
-    sleep 2
 fi
 
 # ---------------- 7. 验证 ----------------
@@ -404,6 +439,6 @@ cat <<EOF
     http:
       url: https://<你的域名>/auth
 数据库：    ${DB_DRIVER}${DB_DRIVER:+ }$([[ "$DB_DRIVER" == "mysql" ]] && echo "${DB_NAME}@${DB_HOST}:${DB_PORT}")
-定时任务：  systemctl status ${APP_NAME}-scheduler  （每分钟 traffic:flush）
-排障：      journalctl -u ${APP_NAME} -n 50 --no-pager
+定时任务：  systemctl status ${UNIT_BASE}-scheduler  （每分钟 traffic:flush）
+排障：      journalctl -u ${UNIT_BASE} -n 50 --no-pager
 EOF
