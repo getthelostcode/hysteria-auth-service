@@ -11,6 +11,8 @@
 #   sudo bash install.sh --uninstall            # 停服务并卸载单元（数据保留）
 # ============================================================
 set -euo pipefail
+# 排查卡点用：DEBUG=1 bash install.sh …（每执行一条命令都打印出来）
+[[ "${DEBUG:-0}" == "1" ]] && set -x
 
 APP_NAME="hysteria-auth-service"
 SERVICE_USER="hysteria-auth"
@@ -152,15 +154,18 @@ if [[ "$UNINSTALL" -eq 1 ]]; then
 fi
 
 # ---------------- 1. 依赖检查 ----------------
-log "检查依赖（每一步都有超时，卡住会有明确报错）"
-command -v "$PHP_BIN" >/dev/null || die "找不到 php（或用 PHP_BIN=/usr/bin/php8.2 指定）"
+log "检查依赖（每个探测都有超时；下面每步都会先说“正在做什么”）"
 
+log "  → 找 php（$PHP_BIN）…"
+command -v "$PHP_BIN" >/dev/null || die "找不到 php（或用 PHP_BIN=/usr/bin/php8.2 指定）"
+log "  → 读 PHP 版本…"
 PHP_VERSION="$(timeout 20 "$PHP_BIN" -r 'echo PHP_VERSION;' 2>/dev/null || true)"
 [[ -n "$PHP_VERSION" ]] || die "php 执行无输出（可能是包装脚本卡住）：试 timeout 5 $PHP_BIN -v"
 "$PHP_BIN" -r 'exit(version_compare(PHP_VERSION, "8.2.0", ">=") ? 0 : 1);' \
     || die "需要 PHP >= 8.2，当前 $PHP_VERSION"
 log "PHP $PHP_VERSION ✓"
 
+log "  → 检查 composer（timeout 15s）…"
 if ! command -v composer >/dev/null 2>&1 || [[ -z "$(timeout 15 composer -V 2>/dev/null || true)" ]]; then
     die "找不到可用的 composer（timeout 15 composer -V 没有输出）"
 fi
@@ -170,6 +175,7 @@ REQUIRED_EXT=(pdo mbstring curl json openssl tokenizer xml ctype fileinfo redis)
 if [[ "$DB_DRIVER" == "sqlite" ]]; then REQUIRED_EXT+=(pdo_sqlite); else REQUIRED_EXT+=(pdo_mysql); fi
 # 一次取回模块列表再比对：`php -m | grep -q` 在 pipefail 下会因为 grep 提前退出产生
 # SIGPIPE 假失败（明明装了扩展却报缺），而且每个扩展起一次 php 也慢。
+log "  → 读 PHP 扩展列表（timeout 20s）…"
 PHP_MODULES="$(timeout 20 "$PHP_BIN" -m 2>/dev/null || true)"
 [[ -n "$PHP_MODULES" ]] || die "php -m 无输出（PHP 安装异常）"
 MISSING=()
@@ -184,6 +190,7 @@ log "PHP 扩展齐备（${#REQUIRED_EXT[@]} 项）✓"
 # Redis 连通性：只做提示，不阻断安装；但必须加超时 ——
 # redis-cli 对「丢包/黑洞」的地址会挂到 TCP 超时（实测 >25s，看起来就像安装卡死）。
 if command -v redis-cli >/dev/null 2>&1; then
+    log "  → Redis 连通性（timeout 3s）…"
     if timeout 3 redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" ping >/dev/null 2>&1; then
         log "Redis 连通 $REDIS_HOST:$REDIS_PORT ✓"
     else
