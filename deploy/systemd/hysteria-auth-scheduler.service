@@ -1,0 +1,17 @@
+[Unit]
+Description=Hysteria2 Auth Service — scheduler (traffic:flush 每分钟 + 清理)
+After=network-online.target redis-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hysteria-auth
+Group=hysteria-auth
+WorkingDirectory=/opt/hysteria-auth-service
+ExecStart=/usr/bin/php artisan schedule:work
+Restart=always
+RestartSec=5
+Environment=APP_ENV=production
+
+[Install]
+WantedBy=multi-user.target
