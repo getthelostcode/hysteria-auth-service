@@ -201,7 +201,7 @@ fi
 
 composer_probe() {   # 返回 composer -V 的输出（stdout+stderr），失败为空
     [[ ${#COMPOSER_CMD[@]} -eq 0 ]] && return 1
-    run_t 20 "${COMPOSER_CMD[@]}" -V --no-interaction </dev/null 2>&1 || true
+    COMPOSER_ALLOW_SUPERUSER=1 COMPOSER_NO_INTERACTION=1 run_t 20 "${COMPOSER_CMD[@]}" -V --no-interaction </dev/null 2>&1 || true
 }
 
 if [[ ${#COMPOSER_CMD[@]} -eq 0 ]] || [[ -z "$(composer_probe)" ]]; then
@@ -246,7 +246,7 @@ if [[ ${#COMPOSER_CMD[@]} -eq 0 ]] || [[ -z "$(composer_probe)" ]]; then
     [[ ${#COMPOSER_CMD[@]} -ne 0 ]] && [[ -n "$(composer_probe)" ]] \
         || die "装不上 composer。请手动装（apt/dnf install composer），或下载 composer.phar 后用 --composer-bin=/路径/composer.phar 重跑"
 fi
-log "composer $("${COMPOSER_CMD[@]}" -V --no-interaction </dev/null 2>/dev/null | awk '{print $3}') ✓（$([[ "${COMPOSER_CMD[0]}" == "$PHP_BIN" ]] && echo "phar: ${COMPOSER_CMD[1]}" || echo "${COMPOSER_CMD[0]}")）"
+log "composer $(COMPOSER_ALLOW_SUPERUSER=1 COMPOSER_NO_INTERACTION=1 "${COMPOSER_CMD[@]}" -V --no-interaction </dev/null 2>/dev/null | awk '{print $3}') ✓（$([[ "${COMPOSER_CMD[0]}" == "$PHP_BIN" ]] && echo "phar: ${COMPOSER_CMD[1]}" || echo "${COMPOSER_CMD[0]}")）"
 
 REQUIRED_EXT=(pdo mbstring curl json openssl tokenizer xml ctype fileinfo redis)
 if [[ "$DB_DRIVER" == "sqlite" ]]; then REQUIRED_EXT+=(pdo_sqlite); else REQUIRED_EXT+=(pdo_mysql); fi
@@ -303,7 +303,7 @@ cd "$APP_DIR"
 
 # ---------------- 3. 依赖 ----------------
 log "composer install（--no-dev，正在下载依赖；视网络 30 秒~3 分钟，不要中断）"
-COMPOSER_ALLOW_SUPERUSER=1 run_t 900 "${COMPOSER_CMD[@]}" install --no-dev --prefer-dist --no-interaction --optimize-autoloader </dev/null \
+COMPOSER_ALLOW_SUPERUSER=1 COMPOSER_NO_INTERACTION=1 run_t 900 "${COMPOSER_CMD[@]}" install --no-dev --prefer-dist --no-interaction --optimize-autoloader </dev/null \
     || die "composer install 失败或超时（在 ${APP_DIR} 手动跑一次看报错）"
 
 # ---------------- 4. .env ----------------
