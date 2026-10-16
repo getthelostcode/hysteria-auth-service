@@ -152,23 +152,47 @@ if [[ "$UNINSTALL" -eq 1 ]]; then
 fi
 
 # ---------------- 1. 依赖检查 ----------------
-log "检查依赖"
+log "检查依赖（每一步都有超时，卡住会有明确报错）"
 command -v "$PHP_BIN" >/dev/null || die "找不到 php（或用 PHP_BIN=/usr/bin/php8.2 指定）"
-PHP_VERSION="$("$PHP_BIN" -r 'echo PHP_VERSION;')"
-"$PHP_BIN" -r 'exit(version_compare(PHP_VERSION, "8.2.0", ">=") ? 0 : 1);' || die "需要 PHP >= 8.2，当前 $PHP_VERSION"
+
+PHP_VERSION="$(timeout 20 "$PHP_BIN" -r 'echo PHP_VERSION;' 2>/dev/null || true)"
+[[ -n "$PHP_VERSION" ]] || die "php 执行无输出（可能是包装脚本卡住）：试 timeout 5 $PHP_BIN -v"
+"$PHP_BIN" -r 'exit(version_compare(PHP_VERSION, "8.2.0", ">=") ? 0 : 1);' \
+    || die "需要 PHP >= 8.2，当前 $PHP_VERSION"
+log "PHP $PHP_VERSION ✓"
+
+if ! command -v composer >/dev/null 2>&1 || [[ -z "$(timeout 15 composer -V 2>/dev/null || true)" ]]; then
+    die "找不到可用的 composer（timeout 15 composer -V 没有输出）"
+fi
+log "composer $(timeout 15 composer -V 2>/dev/null | awk '{print $3}') ✓"
 
 REQUIRED_EXT=(pdo mbstring curl json openssl tokenizer xml ctype fileinfo redis)
 if [[ "$DB_DRIVER" == "sqlite" ]]; then REQUIRED_EXT+=(pdo_sqlite); else REQUIRED_EXT+=(pdo_mysql); fi
+# 一次取回模块列表再比对：`php -m | grep -q` 在 pipefail 下会因为 grep 提前退出产生
+# SIGPIPE 假失败（明明装了扩展却报缺），而且每个扩展起一次 php 也慢。
+PHP_MODULES="$(timeout 20 "$PHP_BIN" -m 2>/dev/null || true)"
+[[ -n "$PHP_MODULES" ]] || die "php -m 无输出（PHP 安装异常）"
 MISSING=()
 for ext in "${REQUIRED_EXT[@]}"; do
-    "$PHP_BIN" -m | grep -qiE "^${ext}$" || MISSING+=("$ext")
+    grep -qiE "^${ext}$" <<<"$PHP_MODULES" || MISSING+=("$ext")
 done
-[[ ${#MISSING[@]} -eq 0 ]] || die "缺少 PHP 扩展：${MISSING[*]}"
-command -v composer >/dev/null || die "找不到 composer"
-if ! redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" ping >/dev/null 2>&1; then
-    warn "连不上 Redis（$REDIS_HOST:$REDIS_PORT）—— 鉴权缓存/在线状态/限流依赖它，装完请确认它可用"
+[[ ${#MISSING[@]} -eq 0 ]] || die "缺少 PHP 扩展：${MISSING[*]}
+  Debian/Ubuntu: apt install -y php-cli php-curl php-mbstring php-xml php-intl php-zip php-redis php-sqlite3|php-mysql
+  RHEL/Rocky:    dnf install -y php-cli php-curl php-mbstring php-xml php-intl php-zip php-pecl-redis5 php-pdo"
+log "PHP 扩展齐备（${#REQUIRED_EXT[@]} 项）✓"
+
+# Redis 连通性：只做提示，不阻断安装；但必须加超时 ——
+# redis-cli 对「丢包/黑洞」的地址会挂到 TCP 超时（实测 >25s，看起来就像安装卡死）。
+if command -v redis-cli >/dev/null 2>&1; then
+    if timeout 3 redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" ping >/dev/null 2>&1; then
+        log "Redis 连通 $REDIS_HOST:$REDIS_PORT ✓"
+    else
+        warn "3 秒内连不上 Redis（$REDIS_HOST:$REDIS_PORT）—— 鉴权缓存/在线状态/流量计数/限流都依赖它；
+      本机装的 Redis 就用默认值；若 Redis 在别处，请加 --redis-host= --redis-port=（别让地址走黑洞，会等到 TCP 超时）"
+    fi
+else
+    warn "没装 redis-cli，跳过连通性检查（应用仍强依赖 Redis，请自行确认 ${REDIS_HOST}:${REDIS_PORT} 可用）"
 fi
-log "PHP $PHP_VERSION / composer $(composer -V 2>/dev/null | awk '{print $3}') 就绪"
 
 # ---------------- 2. 代码就位 ----------------
 log "安装代码到 ${APP_DIR}"
@@ -194,12 +218,9 @@ fi
 cd "$APP_DIR"
 
 # ---------------- 3. 依赖 ----------------
-if [[ "$UPGRADE" -eq 1 ]]; then
-    log "composer install（--no-dev）"
-    COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --prefer-dist --no-interaction --optimize-autoloader
-else
-    COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --prefer-dist --no-interaction --optimize-autoloader
-fi
+log "composer install（--no-dev，正在下载依赖；视网络 30 秒~3 分钟，不要中断）"
+COMPOSER_ALLOW_SUPERUSER=1 timeout 900 composer install --no-dev --prefer-dist --no-interaction --optimize-autoloader \
+    || die "composer install 失败或超时（在 ${APP_DIR} 手动跑一次看报错）"
 
 # ---------------- 4. .env ----------------
 if [[ ! -f .env ]]; then
@@ -242,8 +263,9 @@ fi
 
 # ---------------- 5. 迁移与种子 ----------------
 log "迁移 + 初始化管理员"
-"$PHP_BIN" artisan migrate --force
-"$PHP_BIN" artisan db:seed --force
+timeout 120 "$PHP_BIN" artisan migrate --force || die "migrate 失败/超时（数据库连不上？检查 .env 里的 DB_*）"
+timeout 120 "$PHP_BIN" artisan db:seed --force \
+    || warn "db:seed 失败：管理员可能已存在（可忽略），或者 Redis 连不上（设置项要走 Redis 缓存）——确认后手动跑 php artisan db:seed"
 
 chown -R "$SERVICE_USER":"$SERVICE_USER" "$APP_DIR" 2>/dev/null || true
 chmod -R ug+rwX "$APP_DIR/storage" "$APP_DIR/bootstrap/cache" 2>/dev/null || true
