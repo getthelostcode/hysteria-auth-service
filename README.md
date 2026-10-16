@@ -46,7 +46,79 @@ Laravel 11.57 + Filament 3.3 实现，带**用户自助注册**与**管理后台
 
 ## 1. 快速开始
 
-### 1.1 一键安装（推荐）
+### 1.1 环境依赖（装之前先看）
+
+**必备**
+
+| 组件 | 版本 | 为什么需要 |
+|---|---|---|
+| PHP CLI | **≥ 8.2**（实测 8.2.33） | 框架要求；迁移、调度、队列都靠它 |
+| Composer | 2.x | 安装 PHP 依赖（需要能访问 packagist；离线环境可以直接拷 `vendor/`） |
+| **Redis** | ≥ 6（实测 7.0.15） | **硬依赖**：鉴权缓存、在线集合、流量计数、失败限流全在 Redis 上，没有它 `/auth` 会退化成每次查库且无法计数 |
+| 数据库 | **SQLite 3** 或 **MySQL 8** | 二选一；生产建议 MySQL 8（SQLite 是库级锁，适合单机小规模） |
+| 基础工具 | `git`、`curl`、`unzip`（或 `zip`）、`ca-certificates` | 拉代码、健康检查、Composer 解压 dist 包、HTTPS 证书 |
+
+**PHP 扩展**（前 12 项是 `composer check-platform-reqs` 给出的框架要求，后 3 项是本服务自己加的）
+
+| 扩展 | 用途 |
+|---|---|
+| `ctype` `filter` `hash` `iconv` `json` `pcre`(内置) `session` `tokenizer` `phar` | Laravel 11 / Composer 的基础能力 |
+| `dom` `libxml` `xml` `xmlreader` `xmlwriter` | Symfony / Filament 的 XML 处理 |
+| `mbstring` | 多字节（中文）字符串处理 |
+| `openssl` | `APP_KEY` 加解密、出站 HTTPS |
+| `fileinfo` | 文件类型识别 |
+| `intl` | Filament 的本地化与数字/日期格式（**实测是硬要求**，缺了面板会报错） |
+| `zip` | Composer 解压 `.zip` 分发包 |
+| `curl` | 健康检查与出站请求 |
+| `pdo` + `pdo_sqlite`（SQLite）**或** `pdo_mysql`（MySQL） | 数据库驱动 |
+| **`redis`（phpredis 扩展）** | 鉴权热路径的缓存/计数/限流 |
+
+**Debian / Ubuntu 一键装**
+
+```bash
+sudo apt update
+sudo apt install -y git unzip curl ca-certificates redis-server composer \
+    php-cli php-curl php-mbstring php-xml php-intl php-zip php-redis \
+    php-sqlite3          # SQLite 模式用这个
+    # php-mysql          # MySQL 模式改用它（两个都装也行）
+```
+
+> Debian 12 自带 PHP 8.2、Ubuntu 24.04 自带 PHP 8.3，都满足 ≥ 8.2；扩展包名不带版本号会跟着发行版的默认 PHP 走。
+
+**RHEL / Rocky / Alma（以 Remi 源为例）**
+
+```bash
+sudo dnf install -y epel-release https://rpms.remirepo.net/enterprise/remi-release-9.rpm
+sudo dnf module reset php -y && sudo dnf module enable php:remi-8.2 -y
+sudo dnf install -y php php-cli php-curl php-mbstring php-xml php-intl php-zip php-pecl-redis5 php-pdo
+sudo dnf install -y git unzip curl redis
+# MySQL 模式再加：php-mysqlnd      SQLite 模式再加：php-sqlite3
+```
+
+**可选依赖**
+
+| 组件 | 什么时候需要 |
+|---|---|
+| nginx + php-fpm | 用 `install.sh --mode=fpm` 部署时（**默认的 serve 模式不需要**，直接用 PHP 内置服务器 + systemd） |
+| MySQL 8 服务端 | 想用 `--db=mysql` 时（SQLite 也能跑完整功能） |
+| Node.js 18+ / npm | **只有**要自定义 Filament 主题（改 CSS/JS）才需要编译前端；默认主题不需要 npm |
+| Cloudflare Tunnel / nginx 反代 | 把 `https://auth.<你的域名>/auth` 指到本机 `127.0.0.1:8000`（节点侧走 HTTPS 访问） |
+
+**装完自检**
+
+```bash
+php -v
+php -m | grep -xE 'pdo|pdo_sqlite|pdo_mysql|redis|intl|zip|curl|mbstring'   # 缺哪个这里就没有
+composer check-platform-reqs        # 逐条列出 PHP 版本 + 扩展是否满足（权威清单）
+redis-cli ping                      # 期望 PONG
+bash install.sh --verify            # 健康检查 + /auth 契约冒烟
+```
+
+`install.sh` 会检查同一份清单，缺什么直接报 `缺少 PHP 扩展：xxx` 并退出，不会装到一半才炸。
+
+**实测版本组合**（本仓库就是在这一套上开发并跑测试的）：PHP 8.2.33 · Laravel 11.57.0 · Filament 3.3.57 · Livewire 3.8.10 · Sanctum 4.3.3 · Redis 7.0.15（phpredis） · SQLite 3 / MySQL 8.0.43。
+
+### 1.2 一键安装（推荐）
 
 ```bash
 git clone https://github.com/getthelostcode/hysteria-auth-service.git
@@ -68,7 +140,7 @@ sudo bash install.sh --uninstall                        # 停服务、删单元�
 
 常用参数：`--dir=`（默认 `/opt/hysteria-auth-service`）、`--host/--port`、`--mode=serve|fpm`、`--db=sqlite|mysql`、`--db-*`、`--redis-host/--redis-port/--redis-db`、`--registration=on|off`、`--traffic-token=`、`--admin-email/--admin-password`、`--no-services`。`--help` 看全量。
 
-### 1.2 本机先跑起来（不装服务）
+### 1.3 本机先跑起来（不装服务）
 
 ```bash
 composer install
@@ -81,7 +153,7 @@ php artisan serve --host=127.0.0.1 --port=8000
 * 自助面 `/`、`/register`、`/login`、`/me`；接口契约 `/auth`、`/api/health`；
 * Redis 是**必需**的（缓存/在线集合/计数/限流都在上面）；`redis-cli ping` 有 PONG 就行。
 
-### 1.3 节点怎么接
+### 1.4 节点怎么接
 
 ```yaml
 # /etc/hysteria/config.yaml（节点）
@@ -228,6 +300,8 @@ UserManager::disable()
 ## 8. 部署与运维
 
 ### 8.1 两种运行方式
+
+（依赖清单见 [§1.1 环境依赖](#11-环境依赖装之前先看)：PHP ≥ 8.2 + 扩展、Composer、**Redis**、SQLite 或 MySQL。）
 
 | 方式 | 命令 | 适用 |
 |---|---|---|
