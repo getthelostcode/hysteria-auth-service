@@ -144,9 +144,24 @@ sudo bash install.sh --uninstall                        # 停服务、删单元�
 
 ### 1.3 本机先跑起来（不装服务）
 
+> ⚠️ 刚 `git clone` 或下载 ZIP 后**直接 `php artisan serve` 一定报错**：仓库不带 `vendor/` 和 `.env`。
+> ```
+> PHP Warning: require(.../vendor/autoload.php): Failed to open stream: No such file or directory
+> PHP Fatal error: Uncaught Error: Failed opening required '.../vendor/autoload.php' in .../artisan:9
+> ```
+> 先补依赖再启动 —— 要么一条 `bash dev.sh`，要么走 `install.sh`（正式部署）。
+
 ```bash
-composer install
+bash dev.sh                    # 一条命令：composer install → .env+APP_KEY → SQLite → 迁移+种子 → 前台 serve
+PORT=8013 bash dev.sh          # 换端口
+```
+
+等价的手动步骤（`dev.sh` 做的就是这些）：
+
+```bash
+composer install --no-dev --no-interaction     # root 下先 export COMPOSER_ALLOW_SUPERUSER=1
 cp .env.example .env && php artisan key:generate
+# .env 里 DB_DATABASE 默认指向 /opt 的正式目录，本机试用要改成当前目录的 database/database.sqlite
 touch database/database.sqlite && php artisan migrate --seed
 php artisan serve --host=127.0.0.1 --port=8000
 ```
@@ -390,6 +405,7 @@ sudo bash install.sh --verify                    # 当场验健康检查与 /aut
 | 注册页 404 | 注册被关（`REGISTRATION_ENABLED=false` 或面板里关了） | 面板设置里打开，或 `install.sh --registration=on` |
 | 注册报「用户名已被占用」 | 用户名即 Hysteria id，含软删除记录也会占用 | 换名字，或在面板里恢复/彻底删掉旧用户 |
 | 老用户登录不了 | 密码不是 bcrypt（例如旧版用了别的哈希），或没导入 | 用 `users:import-legacy`，或面板重置密码 |
+| 刚下载/克隆后 `php artisan serve` 报 `Failed opening required .../vendor/autoload.php` | 仓库不带 `vendor/`（也不带 `.env`），这不是代码坏了 | 先 `bash dev.sh`（本机试用）或 `bash install.sh`（正式部署）；手动路径：`composer install` + `cp .env.example .env && php artisan key:generate` |
 | `bash install.sh` 卡在「检查依赖」不动 | ① root 跑 `composer` 在等 `Continue as root/super user [yes]?`（新脚本已自动免疫，旧脚本会卡）；② `redis-cli ping` 打到不可达地址要等 TCP 超时（新脚本 3 秒就跳过并警告） | `git pull` 用新脚本；或 `DEBUG=1 bash install.sh …` 看最后一条命令，按提示处理 |
 | Redis 挂了会怎样 | `/health` 里 `redis:"error"`；鉴权会退化成每次查库并**拒绝写在线/计数** | `systemctl status redis-server`；Redis 是本服务的硬依赖（缓存+计数+限流） |
 
