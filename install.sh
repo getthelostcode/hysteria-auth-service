@@ -40,8 +40,17 @@ UPGRADE=0
 VERIFY_ONLY=0
 UNINSTALL=0
 PHP_BIN="${PHP_BIN:-php}"
+COMPOSER_BIN="${COMPOSER_BIN:-}"       # 可显式指定 composer 可执行文件/或 composer.phar 路径
+COMPOSER_AUTO_INSTALL=1                # 没装 composer 时自动用官方 installer 装一份
 
 log()  { printf '\033[1;34m[%s]\033[0m %s\n' "$(date +%H:%M:%S)" "$*"; }
+# 有 timeout 就用它给外部命令加超时（精简系统可能没有 coreutils timeout，此时退化为直跑并提醒）
+if command -v timeout >/dev/null 2>&1; then
+    run_t() { local secs="$1"; shift; timeout "$secs" "$@"; }
+else
+    warn_no_timeout=1
+    run_t() { local secs="$1"; shift; "$@"; }
+fi
 # 写 .env 的键值：存在就替换（.env 里同一个键出现两次时，phpdotenv 只认第一条！
 # 直接 append 会让 .env.example 里的默认值赢，踩过这个坑）
 env_set() {
@@ -74,6 +83,8 @@ usage() {
   --traffic-token=<串>    开启 /traffic_report 兼容面（留空=关闭）
   --registration=on|off   是否开放自助注册（默认 off）
   --admin-email= --admin-password=   初始化管理员（密码留空则随机并打印）
+  --composer-bin=<路径>   指定 composer（可执行文件或 composer.phar）；没装 composer 时会自动下载官方 installer
+  --no-composer-install   没装 composer 时不自动下载（只报错）
   --no-services           不安装 systemd 单元
   --upgrade               升级已有部署
   --verify                只验证（健康检查 + /auth 契约），不改文件
@@ -100,6 +111,8 @@ while [[ $# -gt 0 ]]; do
         --registration=*) REGISTRATION="${1#*=}" ;;
         --admin-email=*) ADMIN_EMAIL="${1#*=}" ;;
         --admin-password=*) ADMIN_PASSWORD="${1#*=}" ;;
+        --composer-bin=*) COMPOSER_BIN="${1#*=}" ;;
+        --no-composer-install) COMPOSER_AUTO_INSTALL=0 ;;
         --no-services) INSTALL_SERVICES=0 ;;
         --upgrade) UPGRADE=1 ;;
         --verify) VERIFY_ONLY=1 ;;
@@ -155,28 +168,86 @@ fi
 
 # ---------------- 1. 依赖检查 ----------------
 log "检查依赖（每个探测都有超时；下面每步都会先说“正在做什么”）"
+[[ "${warn_no_timeout:-0}" == "1" ]] && warn "本机没有 timeout 命令，探测不会自动超时（建议装 coreutils）；如果你看到长时间停着，用 Ctrl-C 后加 DEBUG=1 重跑定位"
 
 log "  → 找 php（$PHP_BIN）…"
 command -v "$PHP_BIN" >/dev/null || die "找不到 php（或用 PHP_BIN=/usr/bin/php8.2 指定）"
 log "  → 读 PHP 版本…"
-PHP_VERSION="$(timeout 20 "$PHP_BIN" -r 'echo PHP_VERSION;' 2>/dev/null || true)"
+PHP_VERSION="$(run_t 20 "$PHP_BIN" -r 'echo PHP_VERSION;' 2>/dev/null || true)"
 [[ -n "$PHP_VERSION" ]] || die "php 执行无输出（可能是包装脚本卡住）：试 timeout 5 $PHP_BIN -v"
 "$PHP_BIN" -r 'exit(version_compare(PHP_VERSION, "8.2.0", ">=") ? 0 : 1);' \
     || die "需要 PHP >= 8.2，当前 $PHP_VERSION"
 log "PHP $PHP_VERSION ✓"
 
-log "  → 检查 composer（timeout 15s）…"
-if ! command -v composer >/dev/null 2>&1 || [[ -z "$(timeout 15 composer -V 2>/dev/null || true)" ]]; then
-    die "找不到可用的 composer（timeout 15 composer -V 没有输出）"
+log "  → 检查 composer…"
+COMPOSER_CMD=()
+# 一律转成绝对路径：后面会 cd 到安装目录，相对路径会失效
+abs_path() { local p="$1"; [[ -e "$p" ]] && realpath "$p" 2>/dev/null || echo "$p"; }
+if [[ -n "$COMPOSER_BIN" ]]; then
+    if [[ "$COMPOSER_BIN" == *.phar ]]; then COMPOSER_CMD=("$PHP_BIN" "$(abs_path "$COMPOSER_BIN")"); else COMPOSER_CMD=("$(abs_path "$COMPOSER_BIN")"); fi
+elif command -v composer >/dev/null 2>&1; then
+    COMPOSER_CMD=("$(command -v composer)")
+elif [[ -f "$SRC_DIR/composer.phar" ]]; then
+    COMPOSER_CMD=("$PHP_BIN" "$(abs_path "$SRC_DIR/composer.phar")")
+elif [[ -f "$APP_DIR/composer.phar" ]]; then
+    COMPOSER_CMD=("$PHP_BIN" "$(abs_path "$APP_DIR/composer.phar")")
 fi
-log "composer $(timeout 15 composer -V 2>/dev/null | awk '{print $3}') ✓"
+
+composer_probe() {   # 返回 composer -V 的输出（stdout+stderr），失败为空
+    [[ ${#COMPOSER_CMD[@]} -eq 0 ]] && return 1
+    run_t 20 "${COMPOSER_CMD[@]}" -V 2>&1 || true
+}
+
+if [[ ${#COMPOSER_CMD[@]} -eq 0 ]] || [[ -z "$(composer_probe)" ]]; then
+    # 情况一：没装；情况二：装了但跑不起来（坏 phar / 包装脚本卡住 / 被环境变量影响）
+    if [[ ${#COMPOSER_CMD[@]} -ne 0 ]]; then
+        warn "composer 在 $(command -v composer 2>/dev/null || echo "$COMPOSER_BIN")，但 20 秒内没有正常输出："
+        ls -l "$(command -v composer 2>/dev/null || echo "$COMPOSER_BIN")" 2>/dev/null | sed 's/^/      /' || true
+        head -1 "$(command -v composer 2>/dev/null || echo "$COMPOSER_BIN")" 2>/dev/null | sed 's/^/      首行: /' || true
+        warn "换成 composer --version 手动跑一次看报错；或用 --composer-bin=/路径/composer.phar 指定一个干净的 phar"
+    fi
+
+    if [[ "$COMPOSER_AUTO_INSTALL" -eq 0 ]]; then
+        die "没有可用的 composer。装法：apt install -y composer / dnf install -y composer，或用官方 installer 下载 composer.phar 后 --composer-bin=./composer.phar"
+    fi
+
+    log "  没有可用的 composer，尝试用官方 installer 装一份（sha384 校验）…"
+    COMPOSER_DEST_DIR="$APP_DIR"
+    if [[ "$(id -u)" -eq 0 ]]; then COMPOSER_DEST_DIR="/usr/local/bin"; fi
+    mkdir -p "$COMPOSER_DEST_DIR" 2>/dev/null || true
+    TMPC="$(mktemp -d)"
+    if run_t 60 "$PHP_BIN" -r "copy('https://getcomposer.org/installer', '$TMPC/composer-setup.php');" 2>/dev/null \
+       && [[ -s "$TMPC/composer-setup.php" ]]; then
+        EXPECTED="$(run_t 30 curl -fsSL https://composer.github.io/installer.sig 2>/dev/null || true)"
+        ACTUAL="$("$PHP_BIN" -r "echo hash_file('sha384', '$TMPC/composer-setup.php');" 2>/dev/null || true)"
+        if [[ -n "$EXPECTED" && "$EXPECTED" == "$ACTUAL" ]]; then
+            if run_t 180 "$PHP_BIN" "$TMPC/composer-setup.php" --install-dir="$COMPOSER_DEST_DIR" --filename=composer.phar >/dev/null 2>&1 \
+               && [[ -s "$COMPOSER_DEST_DIR/composer.phar" ]]; then
+                COMPOSER_CMD=("$PHP_BIN" "$COMPOSER_DEST_DIR/composer.phar")
+                log "  已安装 composer.phar 到 $COMPOSER_DEST_DIR（调用方式：$PHP_BIN $COMPOSER_DEST_DIR/composer.phar）"
+            else
+                warn "composer installer 执行失败"
+            fi
+        else
+            warn "composer installer 的 sha384 校验不通过（expected=${EXPECTED:-空} actual=${ACTUAL:-空}），放弃自动安装"
+        fi
+        rm -f "$TMPC/composer-setup.php"
+    else
+        warn "下不到 https://getcomposer.org/installer（网络受限？）"
+    fi
+    rmdir "$TMPC" 2>/dev/null || true
+
+    [[ ${#COMPOSER_CMD[@]} -ne 0 ]] && [[ -n "$(composer_probe)" ]] \
+        || die "装不上 composer。请手动装（apt/dnf install composer），或下载 composer.phar 后用 --composer-bin=/路径/composer.phar 重跑"
+fi
+log "composer $("${COMPOSER_CMD[@]}" -V 2>/dev/null | awk '{print $3}') ✓（$([[ "${COMPOSER_CMD[0]}" == "$PHP_BIN" ]] && echo "phar: ${COMPOSER_CMD[1]}" || echo "${COMPOSER_CMD[0]}")）"
 
 REQUIRED_EXT=(pdo mbstring curl json openssl tokenizer xml ctype fileinfo redis)
 if [[ "$DB_DRIVER" == "sqlite" ]]; then REQUIRED_EXT+=(pdo_sqlite); else REQUIRED_EXT+=(pdo_mysql); fi
 # 一次取回模块列表再比对：`php -m | grep -q` 在 pipefail 下会因为 grep 提前退出产生
 # SIGPIPE 假失败（明明装了扩展却报缺），而且每个扩展起一次 php 也慢。
 log "  → 读 PHP 扩展列表（timeout 20s）…"
-PHP_MODULES="$(timeout 20 "$PHP_BIN" -m 2>/dev/null || true)"
+PHP_MODULES="$(run_t 20 "$PHP_BIN" -m 2>/dev/null || true)"
 [[ -n "$PHP_MODULES" ]] || die "php -m 无输出（PHP 安装异常）"
 MISSING=()
 for ext in "${REQUIRED_EXT[@]}"; do
@@ -191,7 +262,7 @@ log "PHP 扩展齐备（${#REQUIRED_EXT[@]} 项）✓"
 # redis-cli 对「丢包/黑洞」的地址会挂到 TCP 超时（实测 >25s，看起来就像安装卡死）。
 if command -v redis-cli >/dev/null 2>&1; then
     log "  → Redis 连通性（timeout 3s）…"
-    if timeout 3 redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" ping >/dev/null 2>&1; then
+    if run_t 3 redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" ping >/dev/null 2>&1; then
         log "Redis 连通 $REDIS_HOST:$REDIS_PORT ✓"
     else
         warn "3 秒内连不上 Redis（$REDIS_HOST:$REDIS_PORT）—— 鉴权缓存/在线状态/流量计数/限流都依赖它；
@@ -226,7 +297,7 @@ cd "$APP_DIR"
 
 # ---------------- 3. 依赖 ----------------
 log "composer install（--no-dev，正在下载依赖；视网络 30 秒~3 分钟，不要中断）"
-COMPOSER_ALLOW_SUPERUSER=1 timeout 900 composer install --no-dev --prefer-dist --no-interaction --optimize-autoloader \
+COMPOSER_ALLOW_SUPERUSER=1 run_t 900 "${COMPOSER_CMD[@]}" install --no-dev --prefer-dist --no-interaction --optimize-autoloader \
     || die "composer install 失败或超时（在 ${APP_DIR} 手动跑一次看报错）"
 
 # ---------------- 4. .env ----------------
@@ -270,8 +341,8 @@ fi
 
 # ---------------- 5. 迁移与种子 ----------------
 log "迁移 + 初始化管理员"
-timeout 120 "$PHP_BIN" artisan migrate --force || die "migrate 失败/超时（数据库连不上？检查 .env 里的 DB_*）"
-timeout 120 "$PHP_BIN" artisan db:seed --force \
+run_t 120 "$PHP_BIN" artisan migrate --force || die "migrate 失败/超时（数据库连不上？检查 .env 里的 DB_*）"
+run_t 120 "$PHP_BIN" artisan db:seed --force \
     || warn "db:seed 失败：管理员可能已存在（可忽略），或者 Redis 连不上（设置项要走 Redis 缓存）——确认后手动跑 php artisan db:seed"
 
 chown -R "$SERVICE_USER":"$SERVICE_USER" "$APP_DIR" 2>/dev/null || true
