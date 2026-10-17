@@ -106,6 +106,7 @@ X-Auth-Token: <TRAFFIC_REPORT_TOKEN>
 | POST | `/logout` | 退出 |
 | GET | `/me` | 我的用量、到期、在线设备、最近 14 天流量 |
 | PATCH | `/me/password` | 改密码（新旧密码判定缓存同时失效） |
+| POST | `/me/uuid/reset` | **用户自助重置自己的 UUID**：表单字段 `current_password`（必填，重新验证身份）、`disconnect`（可选，`1` = 同时把当前在线连接排入待踢队列）。成功后 flash `uuid_rotated` = 新 UUID，审计 `user.uuid_self_reset`（actor 为该用户）。按用户限流（默认 5 次/小时，`SELF_UUID_RESET_PER_HOUR`）；管理员可在面板关掉（403） |
 
 注册规则（面板「面板设置」可改）：用户名 `^[a-zA-Z0-9_][a-zA-Z0-9_.-]{2,31}$` 且唯一（它就是 Hysteria 的 `id`，创建后不可改）；密码最小长度默认 8；新用户默认配额/有效期/设备数取设置项；邀请码可覆盖配额与天数且用完即失效。
 
@@ -180,6 +181,7 @@ php artisan users:import-legacy --dsn=mysql://user:pass@host:3306/hysteria [--dr
 | `REDIS_PREFIX` | 空 | 必须为空：服务自己拼 `hyauth:*` 前缀，双层前缀会让 DEL/EXISTS 对不上 |
 | `TRUSTED_PROXIES` | `127.0.0.1,::1` | 反代/隧道回源时必须配，否则审计 IP 全是 127.0.0.1 |
 | `AUTH_MODE` | `both` | 凭据形态：`uuid` / `password` / `both` |
+| `SELF_UUID_RESET_ENABLED` / `SELF_UUID_RESET_PER_HOUR` | `true` / `5` | 自助重置 UUID 的开关与限流 |
 | `AUTH_CACHE_TTL` | 60 | 用户快照 TTL（禁用/改配额会主动清，不靠它） |
 | `AUTH_PASSWORD_CACHE` | false | 是否缓存密码校验结果（省 bcrypt CPU，注意风险） |
 | `ONLINE_TTL` | 90 | 在线判定窗口（秒） |

@@ -142,7 +142,7 @@ class UserManager
      * 重置 uuid：换一把新钥匙，**旧 uuid 立刻失效**（两个快照键 + 两个封禁键都清）。
      * 传入 $uuid 可指定（用于从别处迁移过来），否则随机生成。
      */
-    public function resetUuid(User $user, ?string $uuid = null): string
+    public function resetUuid(User $user, ?string $uuid = null, bool $kickOnline = false, string $action = 'user.uuid_reset'): string
     {
         $old = (string) $user->uuid;
         $new = $uuid !== null && User::isUuid($uuid) ? strtolower($uuid) : (string) Str::uuid();
@@ -158,7 +158,13 @@ class UserManager
         $this->fails->unblock($new);
         $this->fails->unblock($user->username);
 
-        $this->audit->log('user.uuid_reset', $user, ['old' => $old, 'new' => $new]);
+        if ($kickOnline) {
+            // 用户自己换钥匙时通常想要「把旧设备都踢掉」
+            $this->online->forget($user->username);
+            $this->online->pushKick($user->username, null, 'uuid_reset');
+        }
+
+        $this->audit->log($action, $user, ['old' => $old, 'new' => $new, 'kick_online' => $kickOnline]);
 
         return $new;
     }

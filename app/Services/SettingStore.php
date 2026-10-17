@@ -32,6 +32,7 @@ class SettingStore
             'password_cache_enabled' => (bool) config('hyauth.password_cache', false),
             'denial_audit_enabled' => (bool) config('hyauth.audit.log_denials', true),
             'traffic_report_enabled' => false,
+            'user_uuid_reset_enabled' => (bool) config('hyauth.self_uuid_reset.enabled', true),
             // 品牌
             'brand_name' => 'Hysteria 认证服务',
             'panel_footer' => 'Hysteria Auth Service',

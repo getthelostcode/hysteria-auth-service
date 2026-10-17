@@ -23,6 +23,12 @@ return [
     // 兼容上报面
     'traffic_report_token' => env('TRAFFIC_REPORT_TOKEN', ''),
 
+    // 用户自助重置 UUID：开关 + 每小时次数上限（防止会话被盗后被人反复换钥匙）
+    'self_uuid_reset' => [
+        'enabled' => (bool) env('SELF_UUID_RESET_ENABLED', true),
+        'per_hour' => (int) env('SELF_UUID_RESET_PER_HOUR', 5),
+    ],
+
     // 注册
     'registration' => [
         'enabled' => (bool) env('REGISTRATION_ENABLED', false),

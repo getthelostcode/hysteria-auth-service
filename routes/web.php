@@ -26,4 +26,5 @@ Route::post('/logout', [LoginController::class, 'destroy'])->name('logout');
 Route::middleware('auth:web')->group(function () {
     Route::get('/me', [ProfileController::class, 'show'])->name('me');
     Route::patch('/me/password', [ProfileController::class, 'updatePassword'])->name('me.password');
+    Route::post('/me/uuid/reset', [ProfileController::class, 'resetUuid'])->name('me.uuid.reset');
 });

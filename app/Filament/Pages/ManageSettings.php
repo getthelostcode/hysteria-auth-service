@@ -93,6 +93,9 @@ class ManageSettings extends Page implements HasForms
                             ->helperText('禁用/改配额会主动清缓存，所以 TTL 只影响“外部直接改库”的情形。'),
                         Forms\Components\Toggle::make('password_cache_enabled')
                             ->label('缓存密码校验结果（省 bcrypt CPU，注意安全权衡）'),
+                        Forms\Components\Toggle::make('user_uuid_reset_enabled')
+                            ->label('允许用户自助重置自己的 UUID')
+                            ->helperText('默认开：用户在 /me 上重新输密码即可换钥匙（旧 UUID 立刻失效）。关掉后只有管理员能换。'),
                         Forms\Components\Toggle::make('denial_audit_enabled')
                             ->label('记录鉴权拒绝事件（按 (原因,身份) 10 分钟去重）'),
                         Forms\Components\Toggle::make('traffic_report_enabled')
