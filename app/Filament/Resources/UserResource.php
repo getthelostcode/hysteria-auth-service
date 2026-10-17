@@ -56,6 +56,13 @@ class UserResource extends Resource
                         ->dehydrated()
                         ->helperText('创建后不可修改：客户端用它作为 用户名:密码 的账号部分。'),
 
+                    Forms\Components\TextInput::make('uuid')
+                        ->label('UUID（客户端凭据）')
+                        ->disabled()
+                        ->dehydrated(false)
+                        ->visibleOn('edit')
+                        ->helperText('要换一把：回列表点该行的「重置 UUID」。旧 UUID 重置后立刻失效。'),
+
                     Forms\Components\TextInput::make('email')
                         ->label('邮箱（可选）')
                         ->email()
@@ -111,6 +118,14 @@ class UserResource extends Resource
                     ->searchable()
                     ->sortable()
                     ->copyable(),
+
+                Tables\Columns\TextColumn::make('uuid')
+                    ->label('UUID')
+                    ->copyable()
+                    ->copyMessage('UUID 已复制')
+                    ->fontFamily('mono')
+                    ->searchable()
+                    ->toggleable(isToggledHiddenByDefault: false),
 
                 Tables\Columns\TextColumn::make('status')
                     ->label('状态')
@@ -218,6 +233,24 @@ class UserResource extends Resource
                     ->action(function (User $record): void {
                         app(UserManager::class)->enable($record);
                         Notification::make()->title('已启用 '.$record->username)->success()->send();
+                    }),
+
+                Tables\Actions\Action::make('resetUuid')
+                    ->label('重置 UUID')
+                    ->icon('heroicon-o-arrow-path-rounded-square')
+                    ->color('warning')
+                    ->visible(fn (): bool => (bool) auth('admin')->user()?->canManageUsers())
+                    ->requiresConfirmation()
+                    ->modalHeading('重置该用户的 UUID')
+                    ->modalDescription('客户端要用新 UUID 重新配置；旧 UUID 立刻失效（正在连的会话不受影响，下次重连就被拒）。')
+                    ->action(function (User $record): void {
+                        $new = app(UserManager::class)->resetUuid($record);
+                        Notification::make()
+                            ->title('新 UUID（旧的下一次请求即失效）')
+                            ->body($new)
+                            ->persistent()
+                            ->success()
+                            ->send();
                     }),
 
                 Tables\Actions\Action::make('resetPassword')

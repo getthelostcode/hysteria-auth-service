@@ -45,6 +45,8 @@ class UserResource extends JsonResource
 
         return [
             'username' => $user->username,
+            'uuid' => $user->uuid,
+            'uuid_rotated_at' => $user->uuid_rotated_at?->toIso8601String(),
             'email' => $user->email,
             'enabled' => $user->enabled,
             'status' => $user->statusLabel(),

@@ -4,7 +4,16 @@
 @section('content')
     <div class="card">
         <h1>{{ $user->username }} <span class="badge {{ $user->isUsable() ? 'ok' : 'bad' }}">{{ $user->statusLabel() }}</span></h1>
-        <p class="muted">连接信息：<code>{{ $user->username }}:密码</code>（用户名是 Hysteria 侧的 id，密码就是你的登录密码）</p>
+        @php($mode = app(\App\Services\SettingStore::class)->string('auth_mode'))
+        <p class="muted">
+            客户端 <code>auth</code> 填：
+            @if ($mode === 'password')
+                <code>{{ $user->username }}:你的密码</code>
+            @else
+                <code class="break-all">{{ $user->uuid }}</code>
+                <br><span class="muted">（这串就是你的凭据；泄露了或被踢了，让管理员在后台点「重置 UUID」换一把，旧的立刻失效）</span>
+            @endif
+        </p>
 
         <div class="row" style="margin-top:16px">
             <div class="stat">

@@ -10,6 +10,8 @@ return [
     // Redis 前缀与缓存
     'cache_prefix' => env('AUTH_CACHE_PREFIX', 'hyauth'),
     'redis_connection' => env('AUTH_REDIS_CONNECTION', 'auth'),
+    // auth 形态：uuid（客户端只填 uuid，可重置）/ password（用户名:密码）/ both
+    'auth_mode' => env('AUTH_MODE', 'both'),
     'cache_ttl' => (int) env('AUTH_CACHE_TTL', 60),          // 用户状态快照 TTL（秒）
     'password_cache' => (bool) env('AUTH_PASSWORD_CACHE', false), // 是否缓存密码校验结果（省 bcrypt）
     'online_ttl' => (int) env('ONLINE_TTL', 90),             // 在线判定窗口（秒），与 Hysteria 会话刷新同量级

@@ -27,6 +27,7 @@ class SettingStore
             'default_valid_days' => (int) config('hyauth.defaults.valid_days', 30),
             'default_max_devices' => (int) config('hyauth.defaults.max_devices', 3),
             // 鉴权
+            'auth_mode' => (string) config('hyauth.auth_mode', 'both'),   // uuid | password | both
             'auth_cache_ttl' => (int) config('hyauth.cache_ttl', 60),
             'password_cache_enabled' => (bool) config('hyauth.password_cache', false),
             'denial_audit_enabled' => (bool) config('hyauth.audit.log_denials', true),
@@ -74,6 +75,11 @@ class SettingStore
         foreach ($pairs as $key => $value) {
             if (! array_key_exists($key, self::defaults())) {
                 continue; // 只允许已知键，避免脏数据
+            }
+
+            // auth_mode 只允许三个值，写错就退回 both
+            if ($key === 'auth_mode' && ! in_array($value, ['uuid', 'password', 'both'], true)) {
+                $value = 'both';
             }
 
             Setting::query()->updateOrCreate(

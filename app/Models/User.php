@@ -9,11 +9,15 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Foundation\Auth\User as Authenticatable;
+use Illuminate\Support\Str;
 
 /**
- * Hysteria 认证用户：`username` 就是 Hysteria 侧的 `id`（登录时 userid:password 的 userid）。
+ * Hysteria 认证用户。
  *
- * 本模型同时用于用户自助面（/me）的登录；后台管理员见 AdminUser。
+ * 凭据有两种（由设置 auth_mode 决定用哪种）：
+ *   1. `auth = "<uuid>"`         —— 客户端只填 uuid（推荐，可随时重置）
+ *   2. `auth = "用户名:密码"`     —— 传统形态
+ * 无论哪种，返回给 Hysteria 的 `id` 都是**用户名**（流量统计按它归类）。
  */
 class User extends Authenticatable
 {
@@ -21,7 +25,7 @@ class User extends Authenticatable
     use SoftDeletes;
 
     protected $fillable = [
-        'username', 'password_hash', 'email', 'enabled', 'expires_at',
+        'username', 'uuid', 'password_hash', 'email', 'enabled', 'expires_at',
         'quota_bytes', 'used_bytes', 'tx_bytes', 'rx_bytes', 'max_devices',
         'note', 'last_online_at', 'last_ip', 'disabled_at', 'disabled_reason', 'invite_code_id',
     ];
@@ -35,12 +39,24 @@ class User extends Authenticatable
             'expires_at' => 'datetime',
             'disabled_at' => 'datetime',
             'last_online_at' => 'datetime',
+            'uuid_rotated_at' => 'datetime',
             'quota_bytes' => 'integer',
             'used_bytes' => 'integer',
             'tx_bytes' => 'integer',
             'rx_bytes' => 'integer',
             'max_devices' => 'integer',
         ];
+    }
+
+    protected static function booted(): void
+    {
+        // 任何创建路径（注册 / 后台 / API / 导入）都自动带一个 uuid
+        static::creating(function (self $user): void {
+            if (empty($user->uuid)) {
+                $user->uuid = (string) Str::uuid();
+                $user->uuid_rotated_at = now();
+            }
+        });
     }
 
     /** 自助登录时用 users.password_hash 作为密码列。 */
@@ -78,7 +94,6 @@ class User extends Authenticatable
         return $this->quota_bytes > 0 && $this->used_bytes >= $this->quota_bytes;
     }
 
-    /** 能否放行：启用 + 未过期 + 未超额。 */
     public function isUsable(): bool
     {
         return $this->enabled && ! $this->isExpired() && ! $this->quotaExceeded();
@@ -87,7 +102,7 @@ class User extends Authenticatable
     public function remainingBytes(): ?int
     {
         if ($this->quota_bytes <= 0) {
-            return null; // 不限
+            return null;
         }
 
         return max(0, $this->quota_bytes - $this->used_bytes);
@@ -124,6 +139,23 @@ class User extends Authenticatable
         return $this->last_online_at !== null && $this->last_online_at->gt(now()->subSeconds($ttl));
     }
 
+    /** 客户端配置里要填的那一行（按当前 auth_mode 给最合适的形态）。 */
+    public function authHint(): string
+    {
+        $mode = app(\App\Services\SettingStore::class)->string('auth_mode');
+
+        return match ($mode) {
+            'password' => $this->username.':<你的密码>',
+            'uuid' => (string) $this->uuid,
+            default => (string) $this->uuid,   // both：默认推荐 uuid
+        };
+    }
+
+    public static function isUuid(string $value): bool
+    {
+        return (bool) preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i', $value);
+    }
+
     // ---------------- scope ----------------
 
     public function scopeEnabled(Builder $q): void
@@ -141,7 +173,6 @@ class User extends Authenticatable
         $q->whereNotNull('expires_at')->where('expires_at', '<', now());
     }
 
-    /** 已用完配额（quota_bytes > 0 且 used >= quota）。 */
     public function scopeOverQuota(Builder $q): void
     {
         $q->where('quota_bytes', '>', 0)->whereColumn('used_bytes', '>=', 'quota_bytes');

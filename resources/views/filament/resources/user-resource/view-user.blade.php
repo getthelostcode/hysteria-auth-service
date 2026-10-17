@@ -9,6 +9,15 @@
             </div>
         </x-filament::section>
 
+        <x-filament::section heading="凭据">
+            <div class="space-y-2 text-sm">
+                <div>UUID（客户端 <code>auth</code> 填这个）：</div>
+                <div><code class="break-all">{{ $user->uuid ?? '（无，去列表点「重置 UUID」生成）' }}</code></div>
+                <div class="text-gray-500">最近重置：{{ $user->uuid_rotated_at?->toDateTimeString() ?? '—' }}</div>
+                <div class="text-gray-500">换钥匙：列表行操作「重置 UUID」——旧 UUID 立刻失效。</div>
+            </div>
+        </x-filament::section>
+
         <x-filament::section heading="流量">
             <div class="space-y-1 text-sm">
                 <div>已落库：{{ $human((int) $user->used_bytes) }}</div>

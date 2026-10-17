@@ -31,7 +31,7 @@
 
 | 表 | 关键字段 | 说明 |
 |---|---|---|
-| `users` | `username`(唯一，= Hysteria id)、`password_hash`(bcrypt)、`email`、`enabled`、`expires_at`、`quota_bytes`、`used_bytes`、`tx_bytes`、`rx_bytes`、`max_devices`、`note`、`last_online_at`、`last_ip`、`disabled_at`、`disabled_reason`、软删 | Hysteria 用户 |
+| `users` | `username`(唯一，= Hysteria id)、`uuid`(唯一，客户端凭据，可重置)、`uuid_rotated_at`、`password_hash`(bcrypt)、`email`、`enabled`、`expires_at`、`quota_bytes`、`used_bytes`、`tx_bytes`、`rx_bytes`、`max_devices`、`note`、`last_online_at`、`last_ip`、`disabled_at`、`disabled_reason`、软删 | Hysteria 用户 |
 | `admin_users` | `name`、`email`、`password`、`role`(super-admin/operator/viewer)、`enabled`、`last_login_at` | **后台管理员，与用户表分离**：自助注册永远拿不到面板权限 |
 | `user_sessions` | `username`+`addr` 唯一、`ip`、`tx_bytes`、`rx_bytes`、`first_seen_at`、`last_seen_at`、`ended_at` | 连接记录（在线/设备数/踢人） |
 | `traffic_reports` | `username`、`addr`、`tx_delta`、`rx_delta`、`source`(auth/api/flush)、`reported_at` | 原始增量账（可审计可重算） |
@@ -48,7 +48,8 @@
 
 | Key | 类型 / TTL | 写入者 | 用途 |
 |---|---|---|---|
-| `hyauth:user:{username}` | string(JSON) / `AUTH_CACHE_TTL`(60s) | `/auth` 未命中时回填 | 用户快照（enabled/到期/配额/已用/设备上限/密码哈希）→ 命中即判定，不查库 |
+| `hyauth:user:{username}` | string(JSON) / `AUTH_CACHE_TTL`(60s) | `/auth` 未命中时回填 | 用户快照（enabled/到期/配额/已用/设备上限/密码哈希/uuid）→ 命中即判定，不查库 |
+| `hyauth:uuid:{uuid}` | string(JSON) / 同上 | `/auth`（UUID 形态）未命中时回填 | **同一份快照**，按 uuid 索引；重置 uuid 时新旧两个键都要删 |
 | `hyauth:pwd:{username}:{sha256(密码)/24}` | string / 60s | `/auth`（开关 `AUTH_PASSWORD_CACHE`） | 密码校验结果缓存（默认关） |
 | `hyauth:used:tx:{u}` / `hyauth:used:rx:{u}` | counter | `/auth`、`/traffic_report` | 未落库的流量增量 |
 | `hyauth:sess:{u}:{addr}` | hash / ≥10min | `/auth` | 该连接的**上次累计值**（会话差分基准）+ 最后活跃时间 |
@@ -67,7 +68,9 @@
 | `hyauth:settings` | string(JSON) | 面板设置页 | 运行时设置快照（Laravel Cache，进程内） |
 | `hyauth-test:*` | — | 测试 | phpunit 用 `REDIS_AUTH_DB=15` + 独立前缀，每个用例前清空 |
 
-**主动失效**（与旧版最关键的差别）：禁用/启用/改配额/改到期/改密码/删除 → 立即 `DEL hyauth:user:{u}` + `hyauth:pwd:{u}:*` + `hyauth:block:{u}`；禁用时还会 `ZREM hyauth:online` 并清空设备集合。所以生效是**秒级**，不是等 60 秒 TTL。
+**主动失效**（与旧版最关键的差别）：禁用/启用/改配额/改到期/改密码/**重置 uuid**/删除 → 立即 `DEL hyauth:user:{u}` + `hyauth:uuid:{uuid}`（新旧两个）+ `hyauth:pwd:{u}:*` + `hyauth:block:{u}`；禁用时还会 `ZREM hyauth:online` 并清空设备集合。所以生效是**秒级**，不是等 60 秒 TTL。
+
+> 快照挂两个键是刻意的：UUID 形态的请求手里没有用户名，只能按 uuid 命中缓存；两个键内容相同，任何状态变更必须同时失效（`UserStateCache::forget($username, $uuid)`），漏一个就会出现「禁用/重置了但还能连」。
 
 ## 5. 时序
 
@@ -77,14 +80,15 @@
 客户端        hysteria-server           Laravel /auth                 Redis             MySQL
   │ QUIC 连接 ─▶│                          │                            │                 │
   │             │ {addr,auth,tx:0}         │                            │                 │
-  │             ├─────────────────────────▶│ 1 解析 username:password    │                 │
+  │             ├─────────────────────────▶│ 1 解析形态：uuid ⇒ 按 uuid  │                 │
+  │             │                          │   查快照；含 ':' ⇒ 用户名密码│                 │
   │             │                          │ 2 限流/封禁检查 ──────────▶│                 │
-  │             │                          │ 3 GET hyauth:user:{u} ────▶│                 │
+  │             │                          │ 3 GET hyauth:uuid|user ───▶│                 │
   │             │                          │   └ 未命中 → SELECT users ─────────────────▶│
   │             │                          │ 4 bcrypt（未命中快照才做）   │                 │
   │             │                          │ 5 判 enabled/到期/配额/设备  │                 │
   │             │                          │ 6 ZADD 在线集合 ──────────▶│                 │
-  │             │  200 {"ok":true,"id":"u"}│                            │                 │
+  │             │  200 {"ok":true,"id":"u"}│   （id 始终是用户名）        │                 │
   │             │◀─────────────────────────┤（拒绝也 200：ok:false+reason）                │
   │◀─ 放行 ─────┤                          │                            │                 │
 ```

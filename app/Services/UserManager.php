@@ -6,12 +6,13 @@ namespace App\Services;
 
 use App\Models\User;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Str;
 
 /**
  * 管理员对 Hysteria 用户的操作。
  *
- * **所有改动状态的方法都必须走 afterStateChange()**：它负责清 Redis 快照、
- * 清短期封禁、必要时清在线集合 —— 这就是「禁用/改配额秒级生效」的实现位置。
+ * **所有改动状态的方法都必须走 afterStateChange()**：清 Redis 快照（用户名键 + uuid 键）、
+ * 清短期封禁，必要时清在线集合 —— 这就是「禁用 / 重置 uuid 秒级生效」的实现位置。
  */
 class UserManager
 {
@@ -42,6 +43,7 @@ class UserManager
             'quota_bytes' => $user->quota_bytes,
             'expires_at' => $user->expires_at?->toIso8601String(),
             'max_devices' => $user->max_devices,
+            'uuid' => $user->uuid,
         ]);
 
         return $user;
@@ -79,7 +81,6 @@ class UserManager
         $user->save();
 
         $this->afterStateChange($user);
-        // 已在线的连接：把该用户从在线集合摘掉并排入待踢队列（真正踢由节点侧/控制面执行）
         $this->online->forget($user->username);
         $this->online->pushKick($user->username, null, 'disabled');
 
@@ -111,7 +112,6 @@ class UserManager
         return $user;
     }
 
-    /** 让用户量归零（新计费周期）。返回明文密码为空表示用户自定。 */
     public function resetUsage(User $user): User
     {
         $user->used_bytes = 0;
@@ -126,7 +126,6 @@ class UserManager
         return $user;
     }
 
-    /** 重置密码：默认生成随机明文（只在这里返回一次），也可以由管理员指定。 */
     public function resetPassword(User $user, ?string $plain = null): string
     {
         $plain ??= self::randomPassword();
@@ -139,6 +138,31 @@ class UserManager
         return $plain;
     }
 
+    /**
+     * 重置 uuid：换一把新钥匙，**旧 uuid 立刻失效**（两个快照键 + 两个封禁键都清）。
+     * 传入 $uuid 可指定（用于从别处迁移过来），否则随机生成。
+     */
+    public function resetUuid(User $user, ?string $uuid = null): string
+    {
+        $old = (string) $user->uuid;
+        $new = $uuid !== null && User::isUuid($uuid) ? strtolower($uuid) : (string) Str::uuid();
+
+        $user->uuid = $new;
+        $user->uuid_rotated_at = now();
+        $user->save();
+
+        // 旧 uuid 的快照键必须删掉，否则旧钥匙还能用到 TTL 过期
+        $this->states->forget($user->username, $old);
+        $this->states->forget($user->username, $new);
+        $this->fails->unblock($old);
+        $this->fails->unblock($new);
+        $this->fails->unblock($user->username);
+
+        $this->audit->log('user.uuid_reset', $user, ['old' => $old, 'new' => $new]);
+
+        return $new;
+    }
+
     public function kick(User $user, ?string $addr = null, string $reason = 'admin'): void
     {
         $this->online->pushKick($user->username, $addr, $reason);
@@ -148,18 +172,12 @@ class UserManager
     public function delete(User $user): void
     {
         $username = $user->username;
-        $user->delete(); // 软删：流量与审计记录保留
+        $uuid = (string) $user->uuid;
+        $user->delete(); // 软删：流量与审计保留
 
-        $this->states->forget($username);
+        $this->states->forget($username, $uuid);
         $this->online->forget($username);
         $this->audit->log('user.deleted', null, ['username' => $username]);
-    }
-
-    public function syncUsageFromTraffic(User $user): User
-    {
-        $this->traffic->flush();
-
-        return $user->refresh();
     }
 
     public static function randomPassword(int $length = 16): string
@@ -173,10 +191,10 @@ class UserManager
         return $out;
     }
 
-    /** 状态变更后的统一收尾：清快照 + 清封禁 + 清「已见过」门控。 */
+    /** 状态变更后的统一收尾：清快照（用户名 + uuid）+ 清封禁 + 清「已见过」门控。 */
     private function afterStateChange(User $user): void
     {
-        $this->states->forget($user->username);
+        $this->states->forget($user->username, (string) $user->uuid);
         $this->fails->unblock($user->username);
     }
 }

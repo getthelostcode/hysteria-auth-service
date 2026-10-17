@@ -10,8 +10,10 @@ use Illuminate\Support\Facades\Hash;
 /**
  * /auth 热路径的用户状态快照：命中缓存就不查库、不算 bcrypt。
  *
- * 注意：任何改动用户状态的管理动作都必须调 forget() —— 这是「禁用秒级生效」的关键，
- * 不能等 TTL 自然过期（旧 FastAPI 版就是纯 TTL，禁用最多要等 60 秒才生效）。
+ * 快照挂在两个键上：
+ *   hyauth:user:{username}  —— 用户名/密码形态查它
+ *   hyauth:uuid:{uuid}      —— uuid 形态查它
+ * 内容相同；任何状态变更都必须同时失效（UserStateCache::forget / UserManager）。
  */
 class UserStateCache
 {
@@ -28,18 +30,15 @@ class UserStateCache
 
     public function get(string $username): ?array
     {
-        $raw = $this->cache->conn()->get($this->cache->key('user', $username));
-
-        if (! is_string($raw) || $raw === '') {
-            return null;
-        }
-
-        $data = json_decode($raw, true);
-
-        return is_array($data) ? $data : null;
+        return $this->decode($this->cache->conn()->get($this->cache->key('user', $username)));
     }
 
-    /** 缓存未命中 → 查库 → 回填；用户不存在返回 null。 */
+    public function getByUuid(string $uuid): ?array
+    {
+        return $this->decode($this->cache->conn()->get($this->cache->key('uuid', $uuid)));
+    }
+
+    /** 用户名形态：缓存未命中 → 查库 → 回填；不存在返回 null。 */
     public function resolve(string $username): ?array
     {
         $cached = $this->get($username);
@@ -48,31 +47,46 @@ class UserStateCache
         }
 
         $user = User::query()->where('username', $username)->first();
-        if ($user === null) {
-            return null;
+
+        return $user === null ? null : $this->put($user);
+    }
+
+    /** uuid 形态：同上。 */
+    public function resolveByUuid(string $uuid): ?array
+    {
+        $cached = $this->getByUuid($uuid);
+        if ($cached !== null) {
+            return $cached;
         }
 
-        return $this->put($user);
+        $user = User::query()->where('uuid', $uuid)->first();
+
+        return $user === null ? null : $this->put($user);
     }
 
     public function put(User $user): array
     {
         $snapshot = self::snapshot($user);
-        $this->cache->conn()->setex(
-            $this->cache->key('user', $user->username),
-            $this->ttl(),
-            json_encode($snapshot, JSON_UNESCAPED_UNICODE),
-        );
+        $payload = json_encode($snapshot, JSON_UNESCAPED_UNICODE);
+        $conn = $this->cache->conn();
+        $ttl = $this->ttl();
+
+        $conn->setex($this->cache->key('user', $user->username), $ttl, $payload);
+
+        if (! empty($user->uuid)) {
+            $conn->setex($this->cache->key('uuid', (string) $user->uuid), $ttl, $payload);
+        }
 
         return $snapshot;
     }
 
-    /** 快照里只放判定需要用到的字段（密码哈希本身就是哈希，放缓存不额外泄露明文）。 */
+    /** 快照只放判定需要的字段（密码哈希本身就是哈希）。 */
     public static function snapshot(User $user): array
     {
         return [
             'id' => (int) $user->id,
             'username' => (string) $user->username,
+            'uuid' => (string) $user->uuid,
             'password_hash' => (string) $user->password_hash,
             'enabled' => (bool) $user->enabled,
             'expires_at' => $user->expires_at?->getTimestamp(),
@@ -82,15 +96,15 @@ class UserStateCache
         ];
     }
 
-    /** 状态变更 → 立刻失效（用户快照 + 密码判定 + 短期封禁标记）。 */
-    public function forget(string $username): void
+    /** 状态变更 → 立刻失效（用户名键 + uuid 键 + 密码判定 + 短期封禁）。 */
+    public function forget(string $username, ?string $uuid = null): void
     {
-        $this->cache->forgetUser($username);
+        $this->cache->forgetUser($username, $uuid);
     }
 
     /**
-     * 密码校验。开启 password_cache_enabled 时把「这个用户名+这个密码」的结果缓存到 TTL，
-     * 省掉每次请求的 bcrypt（CPU 昂贵）；改密码/禁用会连它一起清掉。
+     * 密码校验（只用于 用户名:密码 形态）。
+     * 开启 password_cache_enabled 时缓存「这个用户名+这个密码」的结果，省 bcrypt。
      */
     public function verifyPassword(string $username, string $password, string $passwordHash): bool
     {
@@ -109,5 +123,16 @@ class UserStateCache
         $this->cache->conn()->setex($key, $this->ttl(), $ok ? '1' : '0');
 
         return $ok;
+    }
+
+    private function decode(mixed $raw): ?array
+    {
+        if (! is_string($raw) || $raw === '') {
+            return null;
+        }
+
+        $data = json_decode($raw, true);
+
+        return is_array($data) ? $data : null;
     }
 }

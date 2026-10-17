@@ -150,6 +150,21 @@ class UserController extends Controller
         return response()->json(['data' => (new UserResource($user))->toArray($request)]);
     }
 
+    /** 重置 uuid（旧 uuid 立刻失效）。返回新 uuid（可指定，用于迁移场景）。 */
+    public function resetUuid(Request $request, string $username, UserManager $manager): JsonResponse
+    {
+        $this->assertCan($request, 'manage');
+        $request->validate(['uuid' => ['nullable', 'string', 'uuid']]);
+
+        $user = $this->find($username);
+        $new = $manager->resetUuid($user, $request->input('uuid'));
+
+        return response()->json([
+            'data' => (new UserResource($user->refresh()))->toArray($request),
+            'uuid' => $new,   // 与新值同形，方便脚本直接取
+        ]);
+    }
+
     public function kick(Request $request, string $username, UserManager $manager): JsonResponse
     {
         $this->assertCan($request, 'manage');

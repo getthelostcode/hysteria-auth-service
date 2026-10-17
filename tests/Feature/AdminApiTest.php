@@ -98,6 +98,20 @@ class AdminApiTest extends TestCase
             ->assertJsonPath('data.used_bytes', 0);
     }
 
+    public function test_admin_api_actions_are_audited_with_the_admin_actor(): void
+    {
+        $this->user();
+        $admin = $this->admin();
+        $token = $this->tokenFor($admin);
+
+        $this->withToken($token)->postJson('/api/v1/users/alice/disable')->assertOk();
+
+        $log = AuditLog::query()->where('action', 'user.disabled')->latest('id')->firstOrFail();
+        $this->assertSame('admin', $log->actor_type, '管理 API 的动作要记成管理员，不能是 system');
+        $this->assertSame((int) $admin->id, (int) $log->actor_id);
+        $this->assertSame($admin->email, $log->actor_label);
+    }
+
     public function test_password_reset_returns_plaintext_once_and_rotates(): void
     {
         $this->user();

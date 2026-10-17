@@ -47,6 +47,7 @@ Route::prefix('v1')->group(function () {
         Route::post('users/{username}/enable', [AdminUserController::class, 'enable']);
         Route::post('users/{username}/disable', [AdminUserController::class, 'disable']);
         Route::post('users/{username}/password', [AdminUserController::class, 'password']);
+        Route::post('users/{username}/uuid/reset', [AdminUserController::class, 'resetUuid']);
         Route::post('users/{username}/quota/reset', [AdminUserController::class, 'resetUsage']);
         Route::post('users/{username}/kick', [AdminUserController::class, 'kick']);
         Route::delete('users/{username}', [AdminUserController::class, 'destroy']);

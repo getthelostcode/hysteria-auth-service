@@ -21,15 +21,24 @@ Hysteria 在**客户端连接时**（`tx=0`）与**断开时**（带该连接的
 请求：
 
 ```json
-{ "addr": "123.123.123.123:44556", "auth": "alice:secret", "tx": 123456 }
+{ "addr": "123.123.123.123:44556", "auth": "550e8400-e29b-41d4-a716-446655440000", "tx": 123456 }
 ```
 
 | 字段 | 必填 | 说明 |
 |---|---|---|
 | `addr` | 是 | 客户端地址 `ip:port`（IPv6 用 `[::1]:443`）；用于在线设备去重与判定 |
-| `auth` | 是 | `用户名:密码`，按**第一个** `:` 切分（密码里可以有 `:`） |
+| `auth` | 是 | **UUID**（推荐）或 `用户名:密码`；见下表 |
 | `tx` | 否 | 上行字节（连接累计值） |
 | `rx` | 否 | 下行字节（有些版本/中间件会带；带了就一起记账） |
+
+`auth` 的两种形态由设置项 `auth_mode` 决定（`uuid` / `password` / `both`，默认 `both`）：
+
+| 形态 | 例子 | 校验方式 |
+|---|---|---|
+| UUID | `550e8400-e29b-41d4-a716-446655440000`（大小写不敏感） | 按 `users.uuid` 查用户，**不再校验密码**（UUID 本身就是凭据） |
+| 用户名密码 | `alice:secret`（按**第一个** `:` 切分） | 按 `users.username` 查用户 + bcrypt 校验 |
+
+当前模式不允许的形态会被拒：`reason = uuid_disabled` / `password_disabled`。
 
 响应（**必须 200**）：
 
@@ -44,9 +53,10 @@ HTTP 状态码：成功/拒绝都是 **200**；只有 Laravel 自身限流（`AU
 
 | # | 条件 | `reason` |
 |---|---|---|
-| 1 | `auth` 里没有 `:` 或用户名为空 | `malformed` |
+| 1 | `auth` 既不是合法 UUID，也没有 `:` | `malformed` |
+| 1b | 形态被 `auth_mode` 禁止 | `uuid_disabled` / `password_disabled` |
 | 2 | 命中失败限流 / 短期封禁（含“配额刚用完”） | `rate_limited` / `quota_exceeded` |
-| 3 | 用户不存在 | `unknown_user` |
+| 3 | 用户不存在（**重置过的旧 UUID 也走这条**） | `unknown_user` |
 | 4 | 密码错误 | `bad_password` |
 | 5 | 已被禁用 | `disabled` |
 | 6 | 已过期 | `expired` |
@@ -123,6 +133,7 @@ TOKEN=$(curl -s -X POST https://auth.example.com/api/v1/auth/login \
 | POST | `/api/v1/users/{username}/enable` | 运维+ | 启用（秒级生效） |
 | POST | `/api/v1/users/{username}/disable` | 运维+ | **禁用**（`reason` 入审计；立即失效缓存 + 移出在线集合 + 排入待踢队列） |
 | POST | `/api/v1/users/{username}/password` | 运维+ | 重置密码（`password` 留空则随机，返回一次明文） |
+| POST | `/api/v1/users/{username}/uuid/reset` | 运维+ | **重置 UUID**（可传 `uuid` 指定；不传则随机）。返回 `{"uuid":"<新值>","data":{…}}`；**旧 UUID 立刻失效**（`unknown_user`），审计 `user.uuid_reset` 记 old/new |
 | POST | `/api/v1/users/{username}/quota/reset` | 运维+ | 用量归零（新周期） |
 | POST | `/api/v1/users/{username}/kick` | 运维+ | 排入待踢队列 |
 | DELETE | `/api/v1/users/{username}` | 运维+ | 软删除（流量与审计保留） |
@@ -168,6 +179,7 @@ php artisan users:import-legacy --dsn=mysql://user:pass@host:3306/hysteria [--dr
 | `REDIS_*` / `REDIS_AUTH_DB` | `6379` / `3` | 鉴权缓存、在线集合、计数器、限流 |
 | `REDIS_PREFIX` | 空 | 必须为空：服务自己拼 `hyauth:*` 前缀，双层前缀会让 DEL/EXISTS 对不上 |
 | `TRUSTED_PROXIES` | `127.0.0.1,::1` | 反代/隧道回源时必须配，否则审计 IP 全是 127.0.0.1 |
+| `AUTH_MODE` | `both` | 凭据形态：`uuid` / `password` / `both` |
 | `AUTH_CACHE_TTL` | 60 | 用户快照 TTL（禁用/改配额会主动清，不靠它） |
 | `AUTH_PASSWORD_CACHE` | false | 是否缓存密码校验结果（省 bcrypt CPU，注意风险） |
 | `ONLINE_TTL` | 90 | 在线判定窗口（秒） |
@@ -191,6 +203,14 @@ auth:
   http:
     url: https://auth.example.com/auth     # 根路径，与旧 FastAPI 版一致
     insecure: false
+```
+
+客户端（用户侧）的 `auth` 填用户的那串 **UUID**（在 `/me` 页面或后台用户列表里复制），例如：
+
+```yaml
+# 客户端 hysteria 配置
+server: auth.example.com:443
+auth: 550e8400-e29b-41d4-a716-446655440000
 ```
 
 切换后端时只需要改 nginx/隧道的上游（uvicorn → php），**节点配置一个字都不用动**。

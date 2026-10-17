@@ -77,6 +77,16 @@ class ManageSettings extends Page implements HasForms
                 Forms\Components\Section::make('鉴权')
                     ->columns(2)
                     ->schema([
+                        Forms\Components\Select::make('auth_mode')
+                            ->label('凭据形态（客户端 auth 填什么）')
+                            ->options([
+                                'uuid' => '只用 UUID（推荐；客户端只填一串 uuid）',
+                                'password' => '只用 用户名:密码',
+                                'both' => '两种都接受（迁移期）',
+                            ])
+                            ->required()
+                            ->helperText('改成“只用 UUID”后，用户名:密码 形态会被拒（reason=password_disabled）；改回同理。'),
+
                         Forms\Components\TextInput::make('auth_cache_ttl')
                             ->label('用户状态缓存 TTL（秒）')
                             ->numeric()->minValue(5)

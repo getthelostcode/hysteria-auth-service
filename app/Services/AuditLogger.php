@@ -67,17 +67,28 @@ class AuditLogger
         ]);
     }
 
-    /** @return array{0:string,1:?int,2:string} */
+    /**
+     * 审计里的操作者。面板走 admin guard，管理 API 走 sanctum（token 的持有者是 AdminUser），
+     * 自助面走 web guard；都没有就是 system（命令行/定时任务）。
+     *
+     * @return array{0:string,1:?int,2:string}
+     */
     private function actor(): array
     {
-        $admin = Auth::guard('admin')->user();
-        if ($admin instanceof AdminUser) {
-            return ['admin', (int) $admin->id, (string) $admin->email];
-        }
+        foreach (['admin', 'sanctum', 'web'] as $guard) {
+            try {
+                $who = Auth::guard($guard)->user();
+            } catch (\Throwable) {
+                continue;   // 该 guard 未配置时跳过
+            }
 
-        $user = Auth::guard('web')->user();
-        if ($user instanceof User) {
-            return ['user', (int) $user->id, (string) $user->username];
+            if ($who instanceof AdminUser) {
+                return ['admin', (int) $who->id, (string) $who->email];
+            }
+
+            if ($who instanceof User) {
+                return ['user', (int) $who->id, (string) $who->username];
+            }
         }
 
         return ['system', null, 'system'];
